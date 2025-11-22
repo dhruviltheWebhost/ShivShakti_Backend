@@ -1,7 +1,40 @@
-// ... existing imports and pool setup ...
+const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
+require('dotenv').config();
+
+// --- 1. INITIALIZE APP (Must be here!) ---
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// --- 2. MIDDLEWARE ---
+app.use(express.json());
+app.use(cors({
+    origin: '*', 
+    methods: ['GET', 'POST', 'DELETE'],
+    allowedHeaders: ['Content-Type']
+}));
+
+// --- 3. DATABASE CONNECTION ---
+const isProduction = process.env.NODE_ENV === 'production';
+const connectionConfig = {
+    connectionString: process.env.DATABASE_URL,
+    ssl: isProduction ? { rejectUnauthorized: false } : false
+};
+
+const pool = new Pool(connectionConfig);
+
+// Test Connection
+pool.connect((err, client, release) => {
+    if (err) {
+        return console.error('❌ Error acquiring client', err.stack);
+    }
+    console.log('✅ Connected to PostgreSQL Database');
+    release();
+});
 
 // ==========================================
-// 🪄 MAGIC SETUP ROUTE (Run this once)
+// 🪄 4. MAGIC SETUP ROUTE (Run this once)
 // ==========================================
 app.get('/api/setup-db', async (req, res) => {
     try {
@@ -17,8 +50,7 @@ app.get('/api/setup-db', async (req, res) => {
             );
         `;
         await pool.query(createTableQuery);
-        
-        // Add some dummy data so it's not empty
+
         const checkData = await pool.query('SELECT * FROM products');
         if (checkData.rows.length === 0) {
             await pool.query(`
@@ -31,11 +63,72 @@ app.get('/api/setup-db', async (req, res) => {
         } else {
             res.send("✅ Table 'products' already exists. You are good to go.");
         }
-
     } catch (err) {
         console.error(err);
         res.status(500).send("❌ Error creating table: " + err.message);
     }
 });
 
-// ... existing API routes (GET /api/products) ...
+// --- 5. API ROUTES ---
+
+// Get All Products
+app.get('/api/products', async (req, res) => {
+    try {
+        const { category } = req.query;
+        let query = 'SELECT * FROM products';
+        let params = [];
+
+        if (category) {
+            query += ' WHERE category = $1';
+            params.push(category);
+        }
+        
+        query += ' ORDER BY id DESC';
+
+        const result = await pool.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error fetching products:", err);
+        res.status(500).json({ error: 'Server error fetching products' });
+    }
+});
+
+// Add Product
+app.post('/api/products', async (req, res) => {
+    try {
+        const { name, description, price, category, image_url } = req.body;
+        
+        if (!name || !category || !image_url) {
+            return res.status(400).json({ error: "Name, Category, and Image URL are required." });
+        }
+
+        const query = `
+            INSERT INTO products (name, description, price, category, image_url)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *;
+        `;
+        
+        const result = await pool.query(query, [name, description, price, category, image_url]);
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error("Error adding product:", err);
+        res.status(500).json({ error: 'Failed to add product' });
+    }
+});
+
+// Delete Product
+app.delete('/api/products/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM products WHERE id = $1', [id]);
+        res.json({ message: 'Product deleted successfully' });
+    } catch (err) {
+        console.error("Error deleting product:", err);
+        res.status(500).json({ error: 'Failed to delete product' });
+    }
+});
+
+// --- 6. START SERVER ---
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+});
